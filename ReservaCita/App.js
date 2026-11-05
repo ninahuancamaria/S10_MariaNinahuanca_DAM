@@ -1,4 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Notifications from 'expo-notifications';
 import {
   StyleSheet,
   Text,
@@ -9,7 +11,19 @@ import {
   KeyboardAvoidingView,
   Platform,
   SafeAreaView,
+  Alert,
 } from 'react-native';
+
+const CITAS_KEY = '@reservacita/citas';
+
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+    shouldShowBanner: true,
+    shouldShowList: true,
+  }),
+});
 
 export default function App() {
   // ── Estado de los campos del formulario ──────────────────────────────
@@ -23,6 +37,15 @@ export default function App() {
 
   // ── Estado de resultado final ────────────────────────────────────────
   const [enviado, setEnviado] = useState(false);
+  const [citasGuardadas, setCitasGuardadas] = useState([]);
+
+  useEffect(() => {
+    AsyncStorage.getItem(CITAS_KEY)
+      .then((valor) => {
+        if (valor) setCitasGuardadas(JSON.parse(valor));
+      })
+      .catch(() => Alert.alert('Aviso', 'No se pudo cargar el historial de citas.'));
+  }, []);
 
   // ── Validaciones ─────────────────────────────────────────────────────
   const validar = () => {
@@ -61,8 +84,56 @@ export default function App() {
   };
 
   // ── Envío del formulario ──────────────────────────────────────────────
-  const handleEnviar = () => {
+  const handleEnviar = async () => {
     if (validar()) {
+      const cita = {
+        id: `${Date.now()}`,
+        nombre: nombre.trim(),
+        correo: correo.trim(),
+        fecha: fecha.trim(),
+        motivo: motivo.trim(),
+      };
+      const nuevasCitas = [cita, ...citasGuardadas];
+      try {
+        await AsyncStorage.setItem(CITAS_KEY, JSON.stringify(nuevasCitas));
+        setCitasGuardadas(nuevasCitas);
+      } catch {
+        Alert.alert('Error', 'No se pudo guardar la cita en el dispositivo.');
+        return;
+      }
+
+      // Expo local notifications are for native devices. Some embedded web
+      // browsers do not expose the browser Notification API and can leave the
+      // permission request pending, so web should complete the reservation.
+      if (Platform.OS === 'web') {
+        setEnviado(true);
+        return;
+      }
+
+      try {
+        if (Platform.OS === 'android') {
+          await Notifications.setNotificationChannelAsync('citas', {
+            name: 'Confirmaciones de citas',
+            importance: Notifications.AndroidImportance.DEFAULT,
+          });
+        }
+        const { status: estadoActual } = await Notifications.getPermissionsAsync();
+        const { status } = estadoActual === 'granted'
+          ? { status: estadoActual }
+          : await Notifications.requestPermissionsAsync();
+        if (status === 'granted') {
+          await Notifications.scheduleNotificationAsync({
+            content: {
+              title: '¡Cita reservada!',
+              body: `Tu cita para el ${cita.fecha} fue guardada correctamente.`,
+              ...(Platform.OS === 'android' ? { channelId: 'citas' } : {}),
+            },
+            trigger: null,
+          });
+        }
+      } catch {
+        Alert.alert('Cita guardada', 'La cita se guardó, pero no se pudo mostrar la notificación.');
+      }
       setEnviado(true);
     }
   };
@@ -89,6 +160,11 @@ export default function App() {
           <Text style={styles.successSubtitle}>
             Tu cita ha sido registrada correctamente.
           </Text>
+          {Platform.OS === 'web' ? (
+            <Text style={styles.webNotice}>
+              La notificación local está disponible en la versión móvil.
+            </Text>
+          ) : null}
 
           <View style={styles.successCard}>
             <ResumenFila label="Nombre" value={nombre} />
@@ -201,6 +277,18 @@ export default function App() {
           <Text style={styles.nota}>
             ℹ️  Todos los campos son obligatorios.
           </Text>
+
+          <View style={styles.historial}>
+            <Text style={styles.historialTitulo}>Citas guardadas ({citasGuardadas.length})</Text>
+            {citasGuardadas.length === 0 ? (
+              <Text style={styles.historialVacio}>Tus reservas aparecerán aquí.</Text>
+            ) : citasGuardadas.map((cita) => (
+              <View key={cita.id} style={styles.citaGuardada}>
+                <Text style={styles.citaNombre}>{cita.nombre}</Text>
+                <Text style={styles.citaDetalle}>{cita.fecha} · {cita.motivo}</Text>
+              </View>
+            ))}
+          </View>
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -403,6 +491,38 @@ const styles = StyleSheet.create({
     color: '#868e96',
     marginTop: 16,
   },
+  historial: {
+    backgroundColor: '#fff',
+    borderRadius: 18,
+    padding: 18,
+    marginTop: 20,
+  },
+  historialTitulo: {
+    color: '#1a2a4a',
+    fontSize: 17,
+    fontWeight: '700',
+    marginBottom: 8,
+  },
+  historialVacio: {
+    color: '#868e96',
+    fontSize: 13,
+    paddingVertical: 8,
+  },
+  citaGuardada: {
+    borderTopWidth: 1,
+    borderTopColor: '#f1f3f5',
+    paddingVertical: 10,
+  },
+  citaNombre: {
+    color: GRIS_TEXTO,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  citaDetalle: {
+    color: '#868e96',
+    fontSize: 12,
+    marginTop: 3,
+  },
 
   // ── Pantalla de éxito ──
   successContainer: {
@@ -441,6 +561,13 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#6c757d',
     marginBottom: 24,
+    textAlign: 'center',
+  },
+  webNotice: {
+    fontSize: 12,
+    color: '#6c757d',
+    marginTop: -16,
+    marginBottom: 18,
     textAlign: 'center',
   },
   successCard: {
